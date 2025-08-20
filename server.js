@@ -3,14 +3,14 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const admin = require("firebase-admin");
 
-// === Stripe ===
+// Stripe
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-// === MercadoPago ===
-const mercadopago = require("mercadopago");
-mercadopago.configure({ access_token: process.env.MP_ACCESS_TOKEN });
+// MercadoPago (comentado por ahora)
+// const mercadopago = require("mercadopago");
+// mercadopago.configurations.setAccessToken(process.env.MP_ACCESS_TOKEN);
 
-// === Firebase ===
+// Firebase
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -22,7 +22,7 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // =======================
-// Endpoint de prueba: Stripe Checkout
+// Stripe Checkout
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
   try {
@@ -37,6 +37,12 @@ app.post("/stripe-checkout", async (req, res) => {
       customer_email: email,
     });
 
+    // Guardar sesión en Firestore (opcional)
+    await db.collection("users").doc(uid).set({
+      stripeSessionId: session.id,
+      subscriptionActive: false,
+    }, { merge: true });
+
     res.json({ sessionId: session.id });
   } catch (err) {
     console.error("Error Stripe:", err.message);
@@ -44,8 +50,9 @@ app.post("/stripe-checkout", async (req, res) => {
   }
 });
 
+/*
 // =======================
-// Endpoint de prueba: MercadoPago Checkout
+// MercadoPago Checkout (comentado por ahora)
 // =======================
 app.post("/mp-checkout", async (req, res) => {
   try {
@@ -68,17 +75,25 @@ app.post("/mp-checkout", async (req, res) => {
     };
 
     const response = await mercadopago.preferences.create(preference);
+
+    // Guardar preferencia en Firestore
+    await db.collection("users").doc(uid).set({
+      mpPreferenceId: response.body.id,
+      subscriptionActive: false,
+    }, { merge: true });
+
     res.json({ init_point: response.body.init_point });
   } catch (err) {
     console.error("Error MercadoPago:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+*/
 
 // =======================
-// Webhook Stripe (prueba)
+// Webhook Stripe
 // =======================
-app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), (req, res) => {
+app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
@@ -89,18 +104,39 @@ app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), (req, 
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Manejo simple de suscripción pagada
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
-    console.log("✅ Stripe checkout completado para:", session.customer_email);
-    // Aquí podrías actualizar Firestore para marcar usuario activo
+    console.log("✅ Stripe checkout completado:", session.customer_email);
+
+    // Actualizar Firestore: marcar suscripción activa
+    const userRef = db.collection("users").where("stripeSessionId", "==", session.id);
+    const snapshot = await userRef.get();
+    snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
   }
 
   res.json({ received: true });
 });
 
+/*
 // =======================
-// Puerto
+// Webhook MercadoPago (comentado por ahora)
+// =======================
+app.post("/webhook-mp", async (req, res) => {
+  const data = req.body;
+  console.log("🔔 Webhook MP recibido:", data);
+
+  if (data.type === "payment") {
+    const preferenceId = data.data.preference_id;
+    // Actualizar Firestore para marcar suscripción activa
+    const userRef = db.collection("users").where("mpPreferenceId", "==", preferenceId);
+    const snapshot = await userRef.get();
+    snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
+  }
+
+  res.json({ received: true });
+});
+*/
+
 // =======================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
