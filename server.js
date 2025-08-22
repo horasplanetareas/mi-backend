@@ -3,20 +3,21 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const admin = require("firebase-admin");
 
-// Stripe
+// ===== Stripe =====
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-// MercadoPago (versión nueva)
+// ===== MercadoPago versión nueva =====
 const mercadopago = require("mercadopago");
 mercadopago.configurations = { access_token: process.env.MP_ACCESS_TOKEN };
 
-// Firebase
+// ===== Firebase =====
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
 
+// ===== Express setup =====
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
@@ -28,15 +29,17 @@ app.post("/stripe-checkout", async (req, res) => {
   try {
     const { priceId, email, uid } = req.body;
 
+    // Crear sesión de Stripe
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: "http://localhost:4200/success",
+      success_url: "http://localhost:4200/success", // 👈 cambiar a tu frontend
       cancel_url: "http://localhost:4200/cancel",
       customer_email: email,
     });
 
+    // Guardar sesión en Firestore
     await db.collection("users").doc(uid).set({
       stripeSessionId: session.id,
       subscriptionActive: false,
@@ -58,11 +61,7 @@ app.post("/mp-checkout", async (req, res) => {
 
     const preference = {
       items: [
-        {
-          title: "Suscripción Mensual",
-          unit_price: 300,
-          quantity: 1,
-        },
+        { title: "Suscripción Mensual", unit_price: 300, quantity: 1 },
       ],
       back_urls: {
         success: "http://localhost:4200/success",
@@ -74,6 +73,7 @@ app.post("/mp-checkout", async (req, res) => {
 
     const response = await mercadopago.preferences.create(preference);
 
+    // Guardar preferencia en Firestore
     await db.collection("users").doc(uid).set({
       mpPreferenceId: response.body.id,
       subscriptionActive: false,
@@ -104,6 +104,7 @@ app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async 
     const session = event.data.object;
     console.log("✅ Stripe checkout completado:", session.customer_email);
 
+    // Actualizar Firestore: marcar suscripción activa
     const userRef = db.collection("users").where("stripeSessionId", "==", session.id);
     const snapshot = await userRef.get();
     snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
