@@ -32,20 +32,23 @@ app.post("/stripe-checkout", async (req, res) => {
       mode: "subscription",
       payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: "http://localhost:4200/success", // 👈 cambia según tu frontend
+      success_url: "http://localhost:4200/success", // 👈 ajusta a tu frontend real
       cancel_url: "http://localhost:4200/cancel",
       customer_email: email,
     });
 
-    // Guardar sesión en Firestore
-    await db.collection("users").doc(uid).set({
-      stripeSessionId: session.id,
-      subscriptionActive: false,
-    }, { merge: true });
+    // Guardar en Firestore
+    await db.collection("users").doc(uid).set(
+      {
+        stripeSessionId: session.id,
+        subscriptionActive: false,
+      },
+      { merge: true }
+    );
 
     res.json({ sessionId: session.id });
   } catch (err) {
-    console.error("Error Stripe:", err.message);
+    console.error("❌ Error Stripe:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -66,7 +69,7 @@ app.post("/mp-checkout", async (req, res) => {
         },
       ],
       back_urls: {
-        success: "http://localhost:4200/success", // 👈 cambia según tu frontend
+        success: "http://localhost:4200/success",
         failure: "http://localhost:4200/failure",
         pending: "http://localhost:4200/pending",
       },
@@ -75,14 +78,17 @@ app.post("/mp-checkout", async (req, res) => {
 
     const response = await mercadopago.preferences.create(preference);
 
-    await db.collection("users").doc(uid).set({
-      mpPreferenceId: response.body.id,
-      subscriptionActive: false,
-    }, { merge: true });
+    await db.collection("users").doc(uid).set(
+      {
+        mpPreferenceId: response.body.id,
+        subscriptionActive: false,
+      },
+      { merge: true }
+    );
 
     res.json({ init_point: response.body.init_point });
   } catch (err) {
-    console.error("Error MercadoPago:", err.message);
+    console.error("❌ Error MercadoPago:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -90,28 +96,41 @@ app.post("/mp-checkout", async (req, res) => {
 // =======================
 // Webhook Stripe
 // =======================
-app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async (req, res) => {
-  const sig = req.headers["stripe-signature"];
-  let event;
+app.post(
+  "/webhook-stripe",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
 
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error("Webhook Error:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("❌ Webhook Stripe Error:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      console.log("✅ Stripe checkout completado:", session.customer_email);
+
+      const snapshot = await db
+        .collection("users")
+        .where("stripeSessionId", "==", session.id)
+        .get();
+
+      snapshot.forEach((doc) =>
+        doc.ref.update({ subscriptionActive: true })
+      );
+    }
+
+    res.json({ received: true });
   }
-
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
-    console.log("✅ Stripe checkout completado:", session.customer_email);
-
-    const userRef = db.collection("users").where("stripeSessionId", "==", session.id);
-    const snapshot = await userRef.get();
-    snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
-  }
-
-  res.json({ received: true });
-});
+);
 
 // =======================
 // Webhook MercadoPago
@@ -122,9 +141,15 @@ app.post("/webhook-mp", async (req, res) => {
 
   if (data.type === "payment") {
     const preferenceId = data.data.preference_id;
-    const userRef = db.collection("users").where("mpPreferenceId", "==", preferenceId);
-    const snapshot = await userRef.get();
-    snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
+
+    const snapshot = await db
+      .collection("users")
+      .where("mpPreferenceId", "==", preferenceId)
+      .get();
+
+    snapshot.forEach((doc) =>
+      doc.ref.update({ subscriptionActive: true })
+    );
   }
 
   res.json({ received: true });
@@ -132,4 +157,7 @@ app.post("/webhook-mp", async (req, res) => {
 
 // =======================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`)
+);
+s
