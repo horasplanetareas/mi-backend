@@ -131,5 +131,22 @@ app.post("/webhook-mp", async (req, res) => {
 });
 
 // =======================
+// Obtener estado de suscripción
+// =======================
+app.get("/subscription-status/:uid", async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const doc = await db.collection("users").doc(uid).get();
+    if (!doc.exists) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    const data = doc.data();
+    res.json({ subscriptionActive: data?.subscriptionActive || false });
+  } catch (err) {
+    console.error("Error al consultar suscripción:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =======================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
