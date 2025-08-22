@@ -1,25 +1,32 @@
+// server.js
 const express = require("express");
-const bodyParser = require("body-parser");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const mercadopago = require("mercadopago");
 
-// Config MercadoPago
+// ===== Config MercadoPago =====
 mercadopago.configurations = { access_token: process.env.MP_ACCESS_TOKEN };
 
-// Firebase
+// ===== Firebase =====
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
 
-// Express
+// ===== Express setup =====
 const app = express();
 app.use(cors());
-// Para todas las rutas excepto webhook Stripe
-app.use(bodyParser.json());
+
+// Solo parsear JSON para rutas normales (no Stripe webhook)
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook-stripe") {
+    next(); // no parsear body
+  } else {
+    express.json()(req, res, next);
+  }
+});
 
 // =======================
 // Stripe Checkout
@@ -83,8 +90,7 @@ app.post("/mp-checkout", async (req, res) => {
 // =======================
 // Webhook Stripe
 // =======================
-// Importante: bodyParser.raw para recibir el body sin parsear
-app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async (req, res) => {
+app.post("/webhook-stripe", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
 
@@ -110,7 +116,7 @@ app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async 
 // =======================
 // Webhook MercadoPago
 // =======================
-app.post("/webhook-mp", async (req, res) => {
+app.post("/webhook-mp", express.json(), async (req, res) => {
   const data = req.body;
   console.log("🔔 Webhook MP recibido:", data);
 
