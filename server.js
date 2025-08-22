@@ -6,9 +6,9 @@ const admin = require("firebase-admin");
 // Stripe
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-// MercadoPago (comentado por ahora)
-// const mercadopago = require("mercadopago");
-// mercadopago.configurations.setAccessToken(process.env.MP_ACCESS_TOKEN);
+// MercadoPago
+const mercadopago = require("mercadopago");
+mercadopago.configure({ access_token: process.env.MP_ACCESS_TOKEN });
 
 // Firebase
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -32,12 +32,12 @@ app.post("/stripe-checkout", async (req, res) => {
       mode: "subscription",
       payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: "https://tuapp.com/success",
-      cancel_url: "https://tuapp.com/cancel",
+      success_url: "http://localhost:4200/success", // 👈 cambia según tu frontend
+      cancel_url: "http://localhost:4200/cancel",
       customer_email: email,
     });
 
-    // Guardar sesión en Firestore (opcional)
+    // Guardar sesión en Firestore
     await db.collection("users").doc(uid).set({
       stripeSessionId: session.id,
       subscriptionActive: false,
@@ -50,9 +50,8 @@ app.post("/stripe-checkout", async (req, res) => {
   }
 });
 
-/*
 // =======================
-// MercadoPago Checkout (comentado por ahora)
+// MercadoPago Checkout
 // =======================
 app.post("/mp-checkout", async (req, res) => {
   try {
@@ -67,16 +66,15 @@ app.post("/mp-checkout", async (req, res) => {
         },
       ],
       back_urls: {
-        success: "https://tuapp.com/success",
-        failure: "https://tuapp.com/failure",
-        pending: "https://tuapp.com/pending",
+        success: "http://localhost:4200/success", // 👈 cambia según tu frontend
+        failure: "http://localhost:4200/failure",
+        pending: "http://localhost:4200/pending",
       },
       auto_return: "approved",
     };
 
     const response = await mercadopago.preferences.create(preference);
 
-    // Guardar preferencia en Firestore
     await db.collection("users").doc(uid).set({
       mpPreferenceId: response.body.id,
       subscriptionActive: false,
@@ -88,7 +86,6 @@ app.post("/mp-checkout", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-*/
 
 // =======================
 // Webhook Stripe
@@ -108,7 +105,6 @@ app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async 
     const session = event.data.object;
     console.log("✅ Stripe checkout completado:", session.customer_email);
 
-    // Actualizar Firestore: marcar suscripción activa
     const userRef = db.collection("users").where("stripeSessionId", "==", session.id);
     const snapshot = await userRef.get();
     snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
@@ -117,9 +113,8 @@ app.post("/webhook-stripe", bodyParser.raw({ type: "application/json" }), async 
   res.json({ received: true });
 });
 
-/*
 // =======================
-// Webhook MercadoPago (comentado por ahora)
+// Webhook MercadoPago
 // =======================
 app.post("/webhook-mp", async (req, res) => {
   const data = req.body;
@@ -127,7 +122,6 @@ app.post("/webhook-mp", async (req, res) => {
 
   if (data.type === "payment") {
     const preferenceId = data.data.preference_id;
-    // Actualizar Firestore para marcar suscripción activa
     const userRef = db.collection("users").where("mpPreferenceId", "==", preferenceId);
     const snapshot = await userRef.get();
     snapshot.forEach(doc => doc.ref.update({ subscriptionActive: true }));
@@ -135,7 +129,6 @@ app.post("/webhook-mp", async (req, res) => {
 
   res.json({ received: true });
 });
-*/
 
 // =======================
 const PORT = process.env.PORT || 3000;
