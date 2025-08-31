@@ -29,7 +29,7 @@ app.use((req, res, next) => {
 });
 
 // =======================
-// Stripe Checkout
+// Stripe Checkout (queda igual)
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
   try {
@@ -42,7 +42,7 @@ app.post("/stripe-checkout", async (req, res) => {
       success_url: "https://horas-planetarias.vercel.app/success",
       cancel_url: "https://horas-planetarias.vercel.app/cancel",
       customer_email: email,
-      metadata: { uid }, // 🔑 guardamos el uid en metadata
+      metadata: { uid },
     });
 
     await db.collection("users").doc(uid).set(
@@ -61,27 +61,32 @@ app.post("/stripe-checkout", async (req, res) => {
 });
 
 // =======================
-// MercadoPago Checkout
+// MercadoPago Suscripción Mensual
 // =======================
-app.post("/mp-checkout", async (req, res) => {
+app.post("/mp-subscription", async (req, res) => {
   try {
-    const { uid } = req.body;
+    const { uid, email } = req.body;
 
-    const preference = {
-      items: [{ title: "Suscripción Mensual", unit_price: 300, quantity: 1 }],
-      back_urls: {
-        success: "https://horas-planetarias.vercel.app/success",
-        failure: "https://horas-planetarias.vercel.app/failure",
-        pending: "https://horas-planetarias.vercel.app/pending",
+    const subscription = {
+      reason: "Suscripción Mensual - Plan Premium",
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: "months",
+        transaction_amount: 300, // 💰 monto mensual
+        currency_id: "UYU",      // pesos uruguayos
+        start_date: new Date().toISOString(),
+        end_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString()
       },
-      auto_return: "approved",
+      back_url: "https://horas-planetarias.vercel.app/success",
+      payer_email: email
     };
 
-    const response = await mercadopago.preferences.create(preference);
+    const response = await mercadopago.preapproval.create(subscription);
 
+    // Guardar en Firebase
     await db.collection("users").doc(uid).set(
       {
-        mpPreferenceId: response.body.id,
+        mpPreapprovalId: response.body.id,
         subscriptionActive: false,
       },
       { merge: true }
@@ -89,7 +94,7 @@ app.post("/mp-checkout", async (req, res) => {
 
     res.json({ init_point: response.body.init_point });
   } catch (err) {
-    console.error("Error MercadoPago:", err.message);
+    console.error("Error MercadoPago Suscripción:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -117,7 +122,7 @@ app.post(
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-      const uid = session.metadata.uid; // ✅ directo del checkout
+      const uid = session.metadata.uid;
 
       console.log("✅ Stripe checkout completado para uid:", uid);
 
@@ -133,18 +138,23 @@ app.post(
 );
 
 // =======================
-// Webhook MercadoPago
+// Webhook MercadoPago Suscripciones
 // =======================
 app.post("/webhook-mp", express.json(), async (req, res) => {
   const data = req.body;
-  console.log("🔔 Webhook MP recibido:", data);
+  console.log("🔔 Webhook MP recibido:", JSON.stringify(data, null, 2));
 
-  if (data.type === "payment") {
-    const preferenceId = data.data.preference_id;
-    const userRef = db.collection("users").where("mpPreferenceId", "==", preferenceId);
+  if (data.type === "preapproval") {
+    const preapprovalId = data.data.id;
+
+    const userRef = db.collection("users").where("mpPreapprovalId", "==", preapprovalId);
     const snapshot = await userRef.get();
+
     snapshot.forEach((doc) =>
-      doc.ref.update({ subscriptionActive: true, updatedAt: new Date() })
+      doc.ref.update({
+        subscriptionActive: true,
+        updatedAt: new Date(),
+      })
     );
   }
 
