@@ -3,61 +3,53 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const mercadopago = require("mercadopago");
 
-// ===== Config MercadoPago =====
-mercadopago.configure({
-  access_token: process.env.MP_ACCESS_TOKEN,
+// ===== Config MercadoPago SDK v2 =====
+const { MercadoPagoConfig, PreApproval } = require("mercadopago");
+const mpClient = new MercadoPagoConfig({
+  accessToken: process.env.MP_ACCESS_TOKEN,
 });
+const preapproval = new PreApproval(mpClient);
 
-// ===== Firebase =====
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+// ===== Firebase Admin =====
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+  });
+}
 const db = admin.firestore();
 
-// ===== Express setup =====
 const app = express();
 app.use(cors());
-
-// Solo parsear JSON para rutas normales (no Stripe webhook)
-app.use((req, res, next) => {
-  if (req.originalUrl === "/webhook-stripe") {
-    next(); // no parsear body
-  } else {
-    express.json()(req, res, next);
-  }
-});
+app.use(express.json());
 
 // =======================
-// Stripe Checkout (queda igual)
+// Stripe Checkout (pago único o subscripción Stripe)
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
   try {
     const { priceId, email, uid } = req.body;
 
     const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
       payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
+      mode: "subscription",
+      customer_email: email,
       success_url: "https://horas-planetarias.vercel.app/success",
       cancel_url: "https://horas-planetarias.vercel.app/cancel",
-      customer_email: email,
-      metadata: { uid },
     });
 
+    // Guardamos el id de la sesión en Firebase
     await db.collection("users").doc(uid).set(
       {
         stripeSessionId: session.id,
-        subscriptionActive: false,
       },
       { merge: true }
     );
 
     res.json({ sessionId: session.id });
   } catch (err) {
-    console.error("Error Stripe:", err.message);
+    console.error("Error Stripe Checkout:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -69,32 +61,34 @@ app.post("/mp-subscription", async (req, res) => {
   try {
     const { uid, email } = req.body;
 
-    const subscription = {
-      reason: "Suscripción Mensual - Plan Premium",
-      auto_recurring: {
-        frequency: 1,
-        frequency_type: "months",
-        transaction_amount: 300, // 💰 monto mensual
-        currency_id: "UYU",      // pesos uruguayos
-        start_date: new Date().toISOString(),
-        end_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString()
+    const response = await preapproval.create({
+      body: {
+        reason: "Suscripción Mensual - Plan Premium",
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: "months",
+          transaction_amount: 300, // 💰 monto mensual
+          currency_id: "UYU",
+          start_date: new Date().toISOString(),
+          end_date: new Date(
+            new Date().setFullYear(new Date().getFullYear() + 1)
+          ).toISOString(),
+        },
+        back_url: "https://horas-planetarias.vercel.app/success",
+        payer_email: email,
       },
-      back_url: "https://horas-planetarias.vercel.app/success",
-      payer_email: email
-    };
-
-    const response = await mercadopago.preapproval.create(subscription);
+    });
 
     // Guardar en Firebase
     await db.collection("users").doc(uid).set(
       {
-        mpPreapprovalId: response.body.id,
+        mpPreapprovalId: response.id,
         subscriptionActive: false,
       },
       { merge: true }
     );
 
-    res.json({ init_point: response.body.init_point });
+    res.json({ init_point: response.init_point });
   } catch (err) {
     console.error("Error MercadoPago Suscripción:", err.message);
     res.status(500).json({ error: err.message });
@@ -102,84 +96,29 @@ app.post("/mp-subscription", async (req, res) => {
 });
 
 // =======================
-// Webhook Stripe
-// =======================
-app.post(
-  "/webhook-stripe",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      console.error("Webhook Error:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const uid = session.metadata.uid;
-
-      console.log("✅ Stripe checkout completado para uid:", uid);
-
-      await db.collection("users").doc(uid).update({
-        subscriptionActive: true,
-        stripeCustomerId: session.customer,
-        updatedAt: new Date(),
-      });
-    }
-
-    res.json({ received: true });
-  }
-);
-
-// =======================
-// Webhook MercadoPago Suscripciones
-// =======================
-app.post("/webhook-mp", express.json(), async (req, res) => {
-  const data = req.body;
-  console.log("🔔 Webhook MP recibido:", JSON.stringify(data, null, 2));
-
-  if (data.type === "preapproval") {
-    const preapprovalId = data.data.id;
-
-    const userRef = db.collection("users").where("mpPreapprovalId", "==", preapprovalId);
-    const snapshot = await userRef.get();
-
-    snapshot.forEach((doc) =>
-      doc.ref.update({
-        subscriptionActive: true,
-        updatedAt: new Date(),
-      })
-    );
-  }
-
-  res.json({ received: true });
-});
-
-// =======================
-// Endpoint para verificar estado de suscripción
+// Estado de Suscripción
 // =======================
 app.get("/subscription-status/:uid", async (req, res) => {
   try {
-    const uid = req.params.uid;
-    const doc = await db.collection("users").doc(uid).get();
-    if (!doc.exists) return res.status(404).json({ error: "Usuario no encontrado" });
+    const { uid } = req.params;
+    const userDoc = await db.collection("users").doc(uid).get();
 
-    const data = doc.data();
-    res.json({ subscriptionActive: data?.subscriptionActive || false });
+    if (!userDoc.exists) {
+      return res.json({ subscriptionActive: false });
+    }
+
+    const userData = userDoc.data();
+    res.json({
+      subscriptionActive: userData.subscriptionActive || false,
+    });
   } catch (err) {
-    console.error("Error al consultar suscripción:", err.message);
+    console.error("Error Subscription Status:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // =======================
+// Start Server
+// =======================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
