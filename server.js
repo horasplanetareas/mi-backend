@@ -6,7 +6,9 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const mercadopago = require("mercadopago");
 
 // ===== Config MercadoPago =====
-mercadopago.configurations = { access_token: process.env.MP_ACCESS_TOKEN };
+mercadopago.configure({
+  access_token: process.env.MP_ACCESS_TOKEN,
+});
 
 // ===== Firebase =====
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
