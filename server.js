@@ -15,12 +15,9 @@ const preapproval = new PreApproval(mpClient);
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-    });
-  }
-
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
 }
 const db = admin.firestore();
 
@@ -29,7 +26,7 @@ app.use(cors());
 app.use(express.json());
 
 // =======================
-// Stripe Checkout (pago único o subscripción Stripe)
+// Stripe Checkout
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
   try {
@@ -44,7 +41,6 @@ app.post("/stripe-checkout", async (req, res) => {
       cancel_url: "https://horas-planetarias.vercel.app/cancel",
     });
 
-    // Guardamos el id de la sesión en Firebase
     await db.collection("users").doc(uid).set(
       {
         stripeSessionId: session.id,
@@ -93,9 +89,12 @@ app.post("/mp-subscription", async (req, res) => {
       { merge: true }
     );
 
-    res.json({ init_point: response.init_point });
+    // ⚡ Ojo: MercadoPago devuelve `sandbox_init_point` en test
+    res.json({
+      init_point: response.sandbox_init_point || response.init_point,
+    });
   } catch (err) {
-    console.error("Error MercadoPago Suscripción:", err.message);
+    console.error("Error MercadoPago Suscripción:", err);
     res.status(500).json({ error: err.message });
   }
 });
