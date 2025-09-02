@@ -19,7 +19,16 @@ const db = admin.firestore();
 // ===== Express =====
 const app = express();
 app.use(cors());
-app.use(express.json());
+
+// ⚠️ Importante: el JSON parser se aplica a todo MENOS al webhook de Stripe
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook-stripe") {
+    next(); // dejamos que use express.raw()
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 
 // =======================
 // Stripe Checkout
@@ -82,13 +91,21 @@ app.post(
 
     if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
-      const uid = subscription.metadata?.uid;
-      if (uid) {
-        await db.collection("users").doc(uid).update({
-          subscriptionActive: false,
-          updatedAt: new Date(),
-        });
-        console.log("❌ Stripe subscription cancelada:", uid);
+      const subscriptionId = subscription.id;
+
+      if (subscriptionId) {
+        const snapshot = await db.collection("users")
+          .where("subscriptionId", "==", subscriptionId)
+          .get();
+
+        snapshot.forEach((doc) =>
+          doc.ref.update({
+            subscriptionActive: false,
+            updatedAt: new Date(),
+          })
+        );
+
+        console.log("❌ Stripe subscription cancelada:", subscriptionId);
       }
     }
 
