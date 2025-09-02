@@ -143,8 +143,16 @@ app.post("/mp-subscription", async (req, res) => {
 
     res.json({ init_point: response.init_point });
   } catch (err) {
-    console.error("Error MercadoPago Suscripción:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Error MercadoPago Suscripción:", err);
+
+    if (err.cause) {
+      console.error("Detalles MP:", JSON.stringify(err.cause, null, 2));
+    }
+
+    res.status(500).json({
+      error: err.message,
+      details: err.cause || err,
+    });
   }
 });
 
