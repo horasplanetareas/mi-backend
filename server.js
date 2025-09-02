@@ -20,20 +20,22 @@ const db = admin.firestore();
 const app = express();
 app.use(cors());
 
-// ⚠️ Importante: el JSON parser se aplica a todo MENOS al webhook de Stripe
+// Parser para JSON y URL-encoded
 app.use((req, res, next) => {
   if (req.originalUrl === "/webhook-stripe") {
-    next(); // dejamos que use express.raw()
+    next(); // webhook Stripe usa express.raw
   } else {
-    express.json()(req, res, next);
+    express.json()(req, res, () => {
+      express.urlencoded({ extended: true })(req, res, next);
+    });
   }
 });
-
 
 // =======================
 // Stripe Checkout
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
+  console.log("📥 /stripe-checkout body:", req.body);
   try {
     const { priceId, email, uid } = req.body;
 
@@ -54,8 +56,8 @@ app.post("/stripe-checkout", async (req, res) => {
 
     res.json({ sessionId: session.id });
   } catch (err) {
-    console.error("Error Stripe Checkout:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error Stripe Checkout:", err);
+    res.status(500).json({ error: err.message, details: err });
   }
 });
 
@@ -72,7 +74,7 @@ app.post(
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
     } catch (err) {
-      console.error("Stripe Webhook Error:", err.message);
+      console.error("❌ Stripe Webhook Error:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
@@ -117,8 +119,14 @@ app.post(
 // MercadoPago Suscripción
 // =======================
 app.post("/mp-subscription", async (req, res) => {
+  console.log("📥 /mp-subscription body:", req.body);
   try {
     const { uid, email } = req.body;
+
+    if (!uid || !email) {
+      console.warn("❗ Faltan uid o email en la request");
+      return res.status(400).json({ error: "uid y email son requeridos" });
+    }
 
     const response = await preapproval.create({
       body: {
@@ -141,18 +149,13 @@ app.post("/mp-subscription", async (req, res) => {
       { merge: true }
     );
 
+    console.log("✅ MercadoPago init_point:", response.init_point);
+
     res.json({ init_point: response.init_point });
   } catch (err) {
-    console.error("Error MercadoPago Suscripción:", err);
-
-    if (err.cause) {
-      console.error("Detalles MP:", JSON.stringify(err.cause, null, 2));
-    }
-
-    res.status(500).json({
-      error: err.message,
-      details: err.cause || err,
-    });
+    console.error("❌ Error MercadoPago Suscripción:", err);
+    if (err.cause) console.error("Detalles MP:", JSON.stringify(err.cause, null, 2));
+    res.status(500).json({ error: err.message, details: err.cause || err });
   }
 });
 
@@ -201,7 +204,7 @@ app.get("/subscription-status/:uid", async (req, res) => {
     const userData = userDoc.data();
     res.json({ subscriptionActive: userData.subscriptionActive || false });
   } catch (err) {
-    console.error("Error Subscription Status:", err.message);
+    console.error("❌ Error Subscription Status:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
