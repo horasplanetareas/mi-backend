@@ -60,7 +60,7 @@ app.post("/mp-subscription", async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 10, // 👈 más seguro en sandbox
+          transaction_amount: 100, // 👈 más seguro en sandbox
           currency_id: "UYU",
           start_date: start.toISOString(),
           end_date: end.toISOString(),
