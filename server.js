@@ -126,8 +126,8 @@ app.post("/mp-subscription", async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 2,
-          currency_id: "USD",
+          transaction_amount: 80,
+          currency_id: "UYU",
           start_date: new Date().toISOString(),
           end_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString(),
         },
