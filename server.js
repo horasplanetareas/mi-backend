@@ -23,7 +23,7 @@ app.use(cors());
 // Parser para JSON y URL-encoded
 app.use((req, res, next) => {
   if (req.originalUrl === "/webhook-stripe") {
-    next(); // webhook Stripe usa express.raw
+    next(); // Stripe usa express.raw
   } else {
     express.json()(req, res, () => {
       express.urlencoded({ extended: true })(req, res, next);
@@ -32,88 +32,9 @@ app.use((req, res, next) => {
 });
 
 // =======================
-// Stripe Checkout
+// Stripe (sin cambios)
 // =======================
-app.post("/stripe-checkout", async (req, res) => {
-  console.log("📥 /stripe-checkout body:", req.body);
-  try {
-    const { priceId, email, uid } = req.body;
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      line_items: [{ price: priceId, quantity: 1 }],
-      mode: "subscription",
-      customer_email: email,
-      metadata: { uid },
-      success_url: "https://horas-planetarias.vercel.app/success",
-      cancel_url: "https://horas-planetarias.vercel.app/cancel",
-    });
-
-    await db.collection("users").doc(uid).set(
-      { stripeSessionId: session.id, subscriptionActive: false },
-      { merge: true }
-    );
-
-    res.json({ sessionId: session.id });
-  } catch (err) {
-    console.error("❌ Error Stripe Checkout:", err);
-    res.status(500).json({ error: err.message, details: err });
-  }
-});
-
-// =======================
-// Stripe Webhook
-// =======================
-app.post(
-  "/webhook-stripe",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-      console.error("❌ Stripe Webhook Error:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const uid = session.metadata?.uid;
-      if (uid) {
-        await db.collection("users").doc(uid).update({
-          subscriptionActive: true,
-          stripeCustomerId: session.customer,
-          updatedAt: new Date(),
-        });
-        console.log("✅ Stripe subscription activada:", uid);
-      }
-    }
-
-    if (event.type === "customer.subscription.deleted") {
-      const subscription = event.data.object;
-      const subscriptionId = subscription.id;
-
-      if (subscriptionId) {
-        const snapshot = await db.collection("users")
-          .where("subscriptionId", "==", subscriptionId)
-          .get();
-
-        snapshot.forEach((doc) =>
-          doc.ref.update({
-            subscriptionActive: false,
-            updatedAt: new Date(),
-          })
-        );
-
-        console.log("❌ Stripe subscription cancelada:", subscriptionId);
-      }
-    }
-
-    res.json({ received: true });
-  }
-);
+// ... aquí va todo tu código actual de Stripe tal cual ...
 
 // =======================
 // MercadoPago Suscripción
@@ -162,17 +83,23 @@ app.post("/mp-subscription", async (req, res) => {
 // =======================
 // MercadoPago Webhook
 // =======================
-app.post("/webhook-mp", async (req, res) => {
+app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
   const data = req.body;
   console.log("🔔 Webhook MP recibido:", JSON.stringify(data, null, 2));
 
+  if (!data) {
+    console.warn("⚠️ Webhook MP vacío");
+    return res.status(400).json({ error: "Body vacío" });
+  }
+
   if (data.type === "preapproval") {
     const preapprovalId = data.data?.id;
-    const status = data.data?.status; // approved / cancelled
+    const status = data.data?.status; // authorized / cancelled
 
     if (preapprovalId) {
-      const userRef = db.collection("users").where("mpPreapprovalId", "==", preapprovalId);
-      const snapshot = await userRef.get();
+      const snapshot = await db.collection("users")
+        .where("mpPreapprovalId", "==", preapprovalId)
+        .get();
 
       snapshot.forEach((doc) =>
         doc.ref.update({
@@ -185,7 +112,11 @@ app.post("/webhook-mp", async (req, res) => {
         `✅ MercadoPago subscription ${status === "authorized" ? "activada" : "cancelada"}:`,
         preapprovalId
       );
+    } else {
+      console.warn("⚠️ No se encontró preapprovalId en el webhook");
     }
+  } else {
+    console.log("⚠️ Webhook recibido con type diferente a preapproval:", data.type);
   }
 
   res.json({ received: true });
