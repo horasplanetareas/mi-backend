@@ -49,16 +49,21 @@ app.post("/mp-subscription", async (req, res) => {
       return res.status(400).json({ error: "uid y email son requeridos" });
     }
 
+    // Fechas seguras (+5 minutos de ahora)
+    const start = new Date(Date.now() + 5 * 60 * 1000);
+    const end = new Date(new Date().setFullYear(start.getFullYear() + 1));
+
     const response = await preapproval.create({
       body: {
         reason: "Suscripción Mensual - Plan Premium",
+        external_reference: uid,
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 80,
+          transaction_amount: 10, // 👈 más seguro en sandbox
           currency_id: "UYU",
-          start_date: new Date().toISOString(),
-          end_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString(),
+          start_date: start.toISOString(),
+          end_date: end.toISOString(),
         },
         back_url: "https://horas-planetarias.vercel.app/success",
         payer_email: email,
@@ -74,7 +79,7 @@ app.post("/mp-subscription", async (req, res) => {
 
     res.json({ init_point: response.init_point });
   } catch (err) {
-    console.error("❌ Error MercadoPago Suscripción:", err);
+    console.error("❌ Error MercadoPago Suscripción:", err.message);
     if (err.cause) console.error("Detalles MP:", JSON.stringify(err.cause, null, 2));
     res.status(500).json({ error: err.message, details: err.cause || err });
   }
