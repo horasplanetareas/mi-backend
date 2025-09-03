@@ -139,7 +139,7 @@ app.post("/mp-subscription", async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 15,
+          transaction_amount: 80,
           start_date: start.toISOString(),
           end_date: end.toISOString(),
         },
