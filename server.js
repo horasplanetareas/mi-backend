@@ -176,31 +176,39 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
     return res.status(400).json({ error: "Body vacío" });
   }
 
-  if (data.type === "preapproval") {
+  // MP puede mandar type: "subscription_preapproval" y entity: "preapproval"
+  if (data.entity === "preapproval" || data.type === "subscription_preapproval") {
     const preapprovalId = data.data?.id;
-    const status = data.data?.status; // authorized / cancelled
 
     if (preapprovalId) {
-      const snapshot = await db.collection("users")
-        .where("mpPreapprovalId", "==", preapprovalId)
-        .get();
+      try {
+        // Consultamos a MP el estado real del preapproval
+        const preapprovalResp = await preapproval.get({ id: preapprovalId });
+        const status = preapprovalResp.body.status; // authorized / cancelled
 
-      snapshot.forEach((doc) =>
-        doc.ref.update({
-          subscriptionActive: status === "authorized",
-          updatedAt: new Date(),
-        })
-      );
+        const snapshot = await db.collection("users")
+          .where("mpPreapprovalId", "==", preapprovalId)
+          .get();
 
-      console.log(
-        `✅ MercadoPago subscription ${status === "authorized" ? "activada" : "cancelada"}:`,
-        preapprovalId
-      );
+        snapshot.forEach((doc) =>
+          doc.ref.update({
+            subscriptionActive: status === "authorized",
+            updatedAt: new Date(),
+          })
+        );
+
+        console.log(
+          `✅ MercadoPago subscription ${status === "authorized" ? "activada" : "cancelada"}:`,
+          preapprovalId
+        );
+      } catch (err) {
+        console.error("❌ Error al consultar preapproval en MP:", err.message);
+      }
     } else {
       console.warn("⚠️ No se encontró preapprovalId en el webhook");
     }
   } else {
-    console.log("⚠️ Webhook recibido con type diferente a preapproval:", data.type);
+    console.log("⚠️ Webhook recibido con type no esperado:", data.type);
   }
 
   res.json({ received: true });
