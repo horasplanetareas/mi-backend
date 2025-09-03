@@ -139,7 +139,7 @@ app.post("/mp-subscription", async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 2, // 👈 más seguro en sandbox
+          transaction_amount: 2,
           currency_id: "USD",
           start_date: start.toISOString(),
           end_date: end.toISOString(),
@@ -176,16 +176,15 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
     return res.status(400).json({ error: "Body vacío" });
   }
 
-  // MP puede mandar type: "subscription_preapproval" y entity: "preapproval"
   if (data.entity === "preapproval" || data.type === "subscription_preapproval") {
     const preapprovalId = data.data?.id;
 
     if (preapprovalId) {
       try {
-        // Consultamos a MP el estado real del preapproval
         const preapprovalResp = await preapproval.get({ id: preapprovalId });
-        const status = preapprovalResp.body.status; // authorized / cancelled
+        console.log("📄 Respuesta preapproval.get:", preapprovalResp);
 
+        const status = preapprovalResp.status; // 👈 FIX: ahora es directo
         const snapshot = await db.collection("users")
           .where("mpPreapprovalId", "==", preapprovalId)
           .get();
