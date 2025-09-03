@@ -140,6 +140,7 @@ app.post("/mp-subscription", async (req, res) => {
           frequency: 1,
           frequency_type: "months",
           transaction_amount: 80,
+          currency_id: "UYU",
           start_date: start.toISOString(),
           end_date: end.toISOString(),
         },
