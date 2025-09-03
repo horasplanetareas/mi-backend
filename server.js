@@ -32,9 +32,88 @@ app.use((req, res, next) => {
 });
 
 // =======================
-// Stripe (sin cambios)
+// Stripe Checkout
 // =======================
-// ... aquí va todo tu código actual de Stripe tal cual ...
+app.post("/stripe-checkout", async (req, res) => {
+  console.log("📥 /stripe-checkout body:", req.body);
+  try {
+    const { priceId, email, uid } = req.body;
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [{ price: priceId, quantity: 1 }],
+      mode: "subscription",
+      customer_email: email,
+      metadata: { uid },
+      success_url: "https://horas-planetarias.vercel.app/success",
+      cancel_url: "https://horas-planetarias.vercel.app/cancel",
+    });
+
+    await db.collection("users").doc(uid).set(
+      { stripeSessionId: session.id, subscriptionActive: false },
+      { merge: true }
+    );
+
+    res.json({ sessionId: session.id });
+  } catch (err) {
+    console.error("❌ Error Stripe Checkout:", err);
+    res.status(500).json({ error: err.message, details: err });
+  }
+});
+
+// =======================
+// Stripe Webhook
+// =======================
+app.post(
+  "/webhook-stripe",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+      console.error("❌ Stripe Webhook Error:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const uid = session.metadata?.uid;
+      if (uid) {
+        await db.collection("users").doc(uid).update({
+          subscriptionActive: true,
+          stripeCustomerId: session.customer,
+          updatedAt: new Date(),
+        });
+        console.log("✅ Stripe subscription activada:", uid);
+      }
+    }
+
+    if (event.type === "customer.subscription.deleted") {
+      const subscription = event.data.object;
+      const subscriptionId = subscription.id;
+
+      if (subscriptionId) {
+        const snapshot = await db.collection("users")
+          .where("subscriptionId", "==", subscriptionId)
+          .get();
+
+        snapshot.forEach((doc) =>
+          doc.ref.update({
+            subscriptionActive: false,
+            updatedAt: new Date(),
+          })
+        );
+
+        console.log("❌ Stripe subscription cancelada:", subscriptionId);
+      }
+    }
+
+    res.json({ received: true });
+  }
+);
 
 // =======================
 // MercadoPago Suscripción
@@ -60,8 +139,8 @@ app.post("/mp-subscription", async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 100, // 👈 más seguro en sandbox
-          currency_id: "UYU",
+          transaction_amount: 2, // 👈 más seguro en sandbox
+          currency_id: "USD",
           start_date: start.toISOString(),
           end_date: end.toISOString(),
         },
