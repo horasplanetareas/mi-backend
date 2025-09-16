@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
@@ -8,6 +7,17 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { MercadoPagoConfig, PreApproval } = require("mercadopago");
 const mpClient = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
 const preapproval = new PreApproval(mpClient);
+
+// ===== PayPal SDK =====
+const paypal = require("@paypal/checkout-server-sdk");
+function paypalClient() {
+  return new paypal.core.PayPalHttpClient(
+    new paypal.core.SandboxEnvironment(
+      process.env.PAYPAL_CLIENT_ID,
+      process.env.PAYPAL_CLIENT_SECRET
+    )
+  );
+}
 
 // ===== Firebase =====
 if (!admin.apps.length) {
@@ -31,11 +41,11 @@ app.use((req, res, next) => {
   }
 });
 
+
 // =======================
 // Stripe Checkout
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
-  console.log("📥 /stripe-checkout body:", req.body);
   try {
     const { priceId, email, uid } = req.body;
 
@@ -61,9 +71,7 @@ app.post("/stripe-checkout", async (req, res) => {
   }
 });
 
-// =======================
 // Stripe Webhook
-// =======================
 app.post(
   "/webhook-stripe",
   express.raw({ type: "application/json" }),
@@ -87,7 +95,6 @@ app.post(
           stripeCustomerId: session.customer,
           updatedAt: new Date(),
         });
-        console.log("✅ Stripe subscription activada:", uid);
       }
     }
 
@@ -106,8 +113,6 @@ app.post(
             updatedAt: new Date(),
           })
         );
-
-        console.log("❌ Stripe subscription cancelada:", subscriptionId);
       }
     }
 
@@ -115,20 +120,18 @@ app.post(
   }
 );
 
+
 // =======================
 // MercadoPago Suscripción
 // =======================
 app.post("/mp-subscription", async (req, res) => {
-  console.log("📥 /mp-subscription body:", req.body);
   try {
     const { uid, email } = req.body;
 
     if (!uid || !email) {
-      console.warn("❗ Faltan uid o email en la request");
       return res.status(400).json({ error: "uid y email son requeridos" });
     }
 
-    // Fechas seguras (+5 minutos de ahora)
     const start = new Date(Date.now() + 5 * 60 * 1000);
     const end = new Date(new Date().setFullYear(start.getFullYear() + 1));
 
@@ -154,27 +157,16 @@ app.post("/mp-subscription", async (req, res) => {
       { merge: true }
     );
 
-    console.log("✅ MercadoPago init_point:", response.init_point);
-
     res.json({ init_point: response.init_point });
   } catch (err) {
     console.error("❌ Error MercadoPago Suscripción:", err.message);
-    if (err.cause) console.error("Detalles MP:", JSON.stringify(err.cause, null, 2));
     res.status(500).json({ error: err.message, details: err.cause || err });
   }
 });
 
-// =======================
 // MercadoPago Webhook
-// =======================
 app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
   const data = req.body;
-  console.log("🔔 Webhook MP recibido:", JSON.stringify(data, null, 2));
-
-  if (!data) {
-    console.warn("⚠️ Webhook MP vacío");
-    return res.status(400).json({ error: "Body vacío" });
-  }
 
   if (data.entity === "preapproval" || data.type === "subscription_preapproval") {
     const preapprovalId = data.data?.id;
@@ -182,9 +174,7 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
     if (preapprovalId) {
       try {
         const preapprovalResp = await preapproval.get({ id: preapprovalId });
-        console.log("📄 Respuesta preapproval.get:", preapprovalResp);
-
-        const status = preapprovalResp.status; // 👈 FIX: ahora es directo
+        const status = preapprovalResp.status;
         const snapshot = await db.collection("users")
           .where("mpPreapprovalId", "==", preapprovalId)
           .get();
@@ -195,23 +185,77 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
             updatedAt: new Date(),
           })
         );
-
-        console.log(
-          `✅ MercadoPago subscription ${status === "authorized" ? "activada" : "cancelada"}:`,
-          preapprovalId
-        );
       } catch (err) {
         console.error("❌ Error al consultar preapproval en MP:", err.message);
       }
-    } else {
-      console.warn("⚠️ No se encontró preapprovalId en el webhook");
     }
-  } else {
-    console.log("⚠️ Webhook recibido con type no esperado:", data.type);
   }
 
   res.json({ received: true });
 });
+
+
+// =======================
+// PayPal Suscripción
+// =======================
+app.post("/paypal-subscription", async (req, res) => {
+  try {
+    const { uid, email } = req.body;
+
+    if (!uid || !email) {
+      return res.status(400).json({ error: "uid y email requeridos" });
+    }
+
+    const request = new paypal.subscriptions.SubscriptionsCreateRequest();
+    request.requestBody({
+      plan_id: process.env.PAYPAL_PLAN_ID,
+      subscriber: { email_address: email },
+      application_context: {
+        brand_name: "Horas Planetarias",
+        return_url: "https://horas-planetarias.vercel.app/success",
+        cancel_url: "https://horas-planetarias.vercel.app/cancel"
+      }
+    });
+
+    const response = await paypalClient().execute(request);
+
+    await db.collection("users").doc(uid).set(
+      { paypalSubscriptionId: response.result.id, subscriptionActive: false },
+      { merge: true }
+    );
+
+    res.json({ approveUrl: response.result.links.find(l => l.rel === "approve").href });
+  } catch (err) {
+    console.error("❌ Error PayPal Subscription:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PayPal Webhook
+app.post("/webhook-paypal", express.json(), async (req, res) => {
+  const event = req.body;
+
+  if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
+    const subId = event.resource.id;
+    const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
+    snapshot.forEach(doc => doc.ref.update({
+      subscriptionActive: true,
+      updatedAt: new Date()
+    }));
+  }
+
+  if (event.event_type === "BILLING.SUBSCRIPTION.CANCELLED") {
+    const subId = event.resource.id;
+    const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
+    snapshot.forEach(doc => doc.ref.update({
+      subscriptionActive: false,
+      updatedAt: new Date()
+    }));
+  }
+
+  res.sendStatus(200);
+});
+
 
 // =======================
 // Estado de suscripción
@@ -230,6 +274,7 @@ app.get("/subscription-status/:uid", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // =======================
 // Start Server

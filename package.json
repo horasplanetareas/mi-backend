@@ -13,11 +13,13 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@paypal/checkout-server-sdk": "^1.0.3",
     "body-parser": "^2.2.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
     "mercadopago": "^2.8.0",
+    "node-fetch": "^3.3.2",
     "stripe": "^18.4.0"
   },
   "devDependencies": {
