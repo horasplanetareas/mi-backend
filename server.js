@@ -198,6 +198,23 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
 // =======================
 // PayPal Suscripción
 // =======================
+const axios = require("axios");
+
+// Función para obtener access token de PayPal
+async function getPayPalAccessToken() {
+  const response = await axios({
+    url: "https://api-m.sandbox.paypal.com/v1/oauth2/token",
+    method: "post",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    auth: {
+      username: process.env.PAYPAL_CLIENT_ID,
+      password: process.env.PAYPAL_CLIENT_SECRET,
+    },
+    data: "grant_type=client_credentials",
+  });
+  return response.data.access_token;
+}
+
 app.post("/paypal-subscription", async (req, res) => {
   try {
     const { uid, email } = req.body;
@@ -206,56 +223,74 @@ app.post("/paypal-subscription", async (req, res) => {
       return res.status(400).json({ error: "uid y email requeridos" });
     }
 
-    const request = new paypal.subscriptions.SubscriptionsCreateRequest();
-    request.requestBody({
-      plan_id: process.env.PAYPAL_PLAN_ID,
-      subscriber: { email_address: email },
-      application_context: {
-        brand_name: "Horas Planetarias",
-        return_url: "https://horas-planetarias.vercel.app/success",
-        cancel_url: "https://horas-planetarias.vercel.app/cancel"
+    const accessToken = await getPayPalAccessToken();
+
+    const response = await axios.post(
+      "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
+      {
+        plan_id: process.env.PAYPAL_PLAN_ID,
+        subscriber: { email_address: email },
+        application_context: {
+          brand_name: "Horas Planetarias",
+          return_url: "https://horas-planetarias.vercel.app/success",
+          cancel_url: "https://horas-planetarias.vercel.app/cancel",
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
       }
-    });
+    );
 
-    const response = await paypalClient().execute(request);
+    const sub = response.data;
 
+    // Guardamos en Firestore
     await db.collection("users").doc(uid).set(
-      { paypalSubscriptionId: response.result.id, subscriptionActive: false },
+      { paypalSubscriptionId: sub.id, subscriptionActive: false },
       { merge: true }
     );
 
-    res.json({ approveUrl: response.result.links.find(l => l.rel === "approve").href });
+    const approveUrl = sub.links.find((l) => l.rel === "approve").href;
+
+    res.json({ approveUrl });
   } catch (err) {
-    console.error("❌ Error PayPal Subscription:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error PayPal Subscription:", err.response?.data || err.message);
+    res.status(500).json({ error: err.message, details: err.response?.data });
   }
 });
 
+// =======================
 // PayPal Webhook
+// =======================
 app.post("/webhook-paypal", express.json(), async (req, res) => {
   const event = req.body;
 
   if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
     const subId = event.resource.id;
     const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
-    snapshot.forEach(doc => doc.ref.update({
-      subscriptionActive: true,
-      updatedAt: new Date()
-    }));
+    snapshot.forEach((doc) =>
+      doc.ref.update({
+        subscriptionActive: true,
+        updatedAt: new Date(),
+      })
+    );
   }
 
   if (event.event_type === "BILLING.SUBSCRIPTION.CANCELLED") {
     const subId = event.resource.id;
     const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
-    snapshot.forEach(doc => doc.ref.update({
-      subscriptionActive: false,
-      updatedAt: new Date()
-    }));
+    snapshot.forEach((doc) =>
+      doc.ref.update({
+        subscriptionActive: false,
+        updatedAt: new Date(),
+      })
+    );
   }
 
   res.sendStatus(200);
 });
-
 
 // =======================
 // Estado de suscripción
