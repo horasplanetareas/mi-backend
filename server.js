@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const axios = require("axios");
 
 // ===== MercadoPago SDK v2 =====
 const { MercadoPagoConfig, PreApproval } = require("mercadopago");
@@ -12,7 +13,7 @@ const preapproval = new PreApproval(mpClient);
 const paypal = require("@paypal/checkout-server-sdk");
 function paypalClient() {
   return new paypal.core.PayPalHttpClient(
-    new paypal.core.SandboxEnvironment(
+    new paypal.core.LiveEnvironment(   // ✅ PRODUCCIÓN
       process.env.PAYPAL_CLIENT_ID,
       process.env.PAYPAL_CLIENT_SECRET
     )
@@ -40,7 +41,6 @@ app.use((req, res, next) => {
     });
   }
 });
-
 
 // =======================
 // Stripe Checkout
@@ -120,7 +120,6 @@ app.post(
   }
 );
 
-
 // =======================
 // MercadoPago Suscripción
 // =======================
@@ -194,16 +193,12 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
   res.json({ received: true });
 });
 
-
 // =======================
-// PayPal Suscripción
+// PayPal Suscripción (Producción)
 // =======================
-const axios = require("axios");
-
-// Función para obtener access token de PayPal
 async function getPayPalAccessToken() {
   const response = await axios({
-    url: "https://api-m.sandbox.paypal.com/v1/oauth2/token",
+    url: "https://api-m.paypal.com/v1/oauth2/token",  // ✅ PRODUCCIÓN
     method: "post",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     auth: {
@@ -226,7 +221,7 @@ app.post("/paypal-subscription", async (req, res) => {
     const accessToken = await getPayPalAccessToken();
 
     const response = await axios.post(
-      "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
+      "https://api-m.paypal.com/v1/billing/subscriptions",  // ✅ PRODUCCIÓN
       {
         plan_id: process.env.PAYPAL_PLAN_ID,
         subscriber: { email_address: email },
@@ -246,7 +241,6 @@ app.post("/paypal-subscription", async (req, res) => {
 
     const sub = response.data;
 
-    // Guardamos en Firestore
     await db.collection("users").doc(uid).set(
       { paypalSubscriptionId: sub.id, subscriptionActive: false },
       { merge: true }
@@ -309,7 +303,6 @@ app.get("/subscription-status/:uid", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // =======================
 // Start Server
