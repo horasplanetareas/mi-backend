@@ -182,9 +182,9 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
           doc.ref.update({
             subscriptionActive: status === "authorized",
             updatedAt: new Date(),
-            console.log("✅ Usuario actualizado:", doc.id, "Status:", status);
           })
         );
+            console.log("✅ Usuario actualizado:", doc.id, "Status:", status);
       } catch (err) {
         console.error("❌ Error al consultar preapproval en MP:", err.message);
         console.log(err);
