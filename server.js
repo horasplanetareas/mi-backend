@@ -3,6 +3,7 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const axios = require("axios");
+const logger = require("./logger"); // 👈 Importamos el logger
 
 // ===== MercadoPago SDK v2 =====
 const { MercadoPagoConfig, PreApproval } = require("mercadopago");
@@ -13,7 +14,7 @@ const preapproval = new PreApproval(mpClient);
 const paypal = require("@paypal/checkout-server-sdk");
 function paypalClient() {
   return new paypal.core.PayPalHttpClient(
-    new paypal.core.LiveEnvironment(   // ✅ PRODUCCIÓN
+    new paypal.core.LiveEnvironment(
       process.env.PAYPAL_CLIENT_ID,
       process.env.PAYPAL_CLIENT_SECRET
     )
@@ -24,6 +25,7 @@ function paypalClient() {
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  logger.info("🔥 Firebase inicializado");
 }
 const db = admin.firestore();
 
@@ -46,6 +48,7 @@ app.use((req, res, next) => {
 // Stripe Checkout
 // =======================
 app.post("/stripe-checkout", async (req, res) => {
+  logger.info("⚡ [Stripe Checkout] Request body: " + JSON.stringify(req.body));
   try {
     const { priceId, email, uid } = req.body;
 
@@ -59,14 +62,17 @@ app.post("/stripe-checkout", async (req, res) => {
       cancel_url: "https://horas-planetarias.vercel.app/cancel",
     });
 
+    logger.info(`✅ [Stripe Checkout] Sesión creada: ${session.id}`);
+
     await db.collection("users").doc(uid).set(
       { stripeSessionId: session.id, subscriptionActive: false },
       { merge: true }
     );
 
+    logger.info(`📄 [Stripe Checkout] Usuario guardado: ${uid}`);
     res.json({ sessionId: session.id });
   } catch (err) {
-    console.error("❌ Error Stripe Checkout:", err);
+    logger.error("❌ [Stripe Checkout] Error: " + err.message);
     res.status(500).json({ error: err.message, details: err });
   }
 });
@@ -76,43 +82,50 @@ app.post(
   "/webhook-stripe",
   express.raw({ type: "application/json" }),
   async (req, res) => {
+    logger.info("🔔 [Stripe Webhook] Evento recibido");
     const sig = req.headers["stripe-signature"];
     let event;
 
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+      logger.info("✅ [Stripe Webhook] Evento validado: " + event.type);
     } catch (err) {
-      console.error("❌ Stripe Webhook Error:", err.message);
+      logger.error("❌ [Stripe Webhook] Error validación: " + err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const uid = session.metadata?.uid;
+      logger.info("⚡ [Stripe Webhook] Checkout completado, UID: " + uid);
       if (uid) {
         await db.collection("users").doc(uid).update({
           subscriptionActive: true,
           stripeCustomerId: session.customer,
           updatedAt: new Date(),
         });
+        logger.info("✅ [Stripe Webhook] Usuario activado: " + uid);
       }
     }
 
     if (event.type === "customer.subscription.deleted") {
       const subscription = event.data.object;
       const subscriptionId = subscription.id;
+      logger.warn("⚡ [Stripe Webhook] Subscripción eliminada: " + subscriptionId);
 
       if (subscriptionId) {
         const snapshot = await db.collection("users")
           .where("subscriptionId", "==", subscriptionId)
           .get();
 
-        snapshot.forEach((doc) =>
+        logger.info("📄 [Stripe Webhook] Usuarios encontrados: " + snapshot.size);
+        snapshot.forEach((doc) => {
           doc.ref.update({
             subscriptionActive: false,
             updatedAt: new Date(),
-          })
-        );
+          });
+          logger.warn("⚡ [Stripe Webhook] Usuario desactivado: " + doc.id);
+        });
       }
     }
 
@@ -124,10 +137,12 @@ app.post(
 // MercadoPago Suscripción
 // =======================
 app.post("/mp-subscription", async (req, res) => {
+  logger.info("⚡ [MP Subscription] Request body: " + JSON.stringify(req.body));
   try {
     const { uid, email } = req.body;
 
     if (!uid || !email) {
+      logger.warn("⚠️ [MP Subscription] uid o email faltantes");
       return res.status(400).json({ error: "uid y email son requeridos" });
     }
 
@@ -151,14 +166,17 @@ app.post("/mp-subscription", async (req, res) => {
       },
     });
 
+    logger.info("✅ [MP Subscription] Preapproval creado: " + response.id);
+
     await db.collection("users").doc(uid).set(
       { mpPreapprovalId: response.id, subscriptionActive: false },
       { merge: true }
     );
 
+    logger.info("📄 [MP Subscription] Usuario guardado: " + uid);
     res.json({ init_point: response.init_point });
   } catch (err) {
-    console.error("❌ Error MercadoPago Suscripción:", err.message);
+    logger.error("❌ [MP Subscription] Error: " + err.message);
     res.status(500).json({ error: err.message, details: err.cause || err });
   }
 });
@@ -166,28 +184,30 @@ app.post("/mp-subscription", async (req, res) => {
 // MercadoPago Webhook
 app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
   const data = req.body;
-  console.log("🔔 Webhook MP recibido:", data);
+  logger.info("🔔 [MP Webhook] Recibido: " + JSON.stringify(data));
   if (data.entity === "preapproval" || data.type === "subscription_preapproval") {
     const preapprovalId = data.data?.id;
-    console.log("🔍 Consultando preapproval ID:", preapprovalId);
+    logger.info("🔍 [MP Webhook] Consultando preapproval ID: " + preapprovalId);
     if (preapprovalId) {
       try {
         const preapprovalResp = await preapproval.get({ id: preapprovalId });
         const status = preapprovalResp.status;
+        logger.info("✅ [MP Webhook] Estado recibido de MP: " + status);
+
         const snapshot = await db.collection("users")
           .where("mpPreapprovalId", "==", preapprovalId)
           .get();
-        console.log("📄 Usuarios encontrados:", snapshot.size);
+
+        logger.info("📄 [MP Webhook] Usuarios encontrados: " + snapshot.size);
         snapshot.forEach((doc) => {
           doc.ref.update({
             subscriptionActive: status === "authorized",
             updatedAt: new Date(),
           });
-          console.log("✅ Usuario actualizado:", doc.id, "Status:", status);
+          logger.info("⚡ [MP Webhook] Usuario actualizado: " + doc.id + " Status: " + status);
         });
       } catch (err) {
-        console.error("❌ Error al consultar preapproval en MP:", err.message);
-        console.log(err);
+        logger.error("❌ [MP Webhook] Error al consultar preapproval: " + err.message);
       }
     }
   }
@@ -199,8 +219,9 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
 // PayPal Suscripción (Producción)
 // =======================
 async function getPayPalAccessToken() {
+  logger.info("⚡ [PayPal] Solicitando accessToken...");
   const response = await axios({
-    url: "https://api-m.paypal.com/v1/oauth2/token",  // ✅ PRODUCCIÓN
+    url: "https://api-m.paypal.com/v1/oauth2/token",
     method: "post",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     auth: {
@@ -209,21 +230,24 @@ async function getPayPalAccessToken() {
     },
     data: "grant_type=client_credentials",
   });
+  logger.info("✅ [PayPal] AccessToken obtenido");
   return response.data.access_token;
 }
 
 app.post("/paypal-subscription", async (req, res) => {
+  logger.info("⚡ [PayPal Subscription] Request body: " + JSON.stringify(req.body));
   try {
     const { uid, email } = req.body;
 
     if (!uid || !email) {
+      logger.warn("⚠️ [PayPal Subscription] uid o email faltantes");
       return res.status(400).json({ error: "uid y email requeridos" });
     }
 
     const accessToken = await getPayPalAccessToken();
 
     const response = await axios.post(
-      "https://api-m.paypal.com/v1/billing/subscriptions",  // ✅ PRODUCCIÓN
+      "https://api-m.paypal.com/v1/billing/subscriptions",
       {
         plan_id: process.env.PAYPAL_PLAN_ID,
         subscriber: { email_address: email },
@@ -242,17 +266,18 @@ app.post("/paypal-subscription", async (req, res) => {
     );
 
     const sub = response.data;
+    logger.info("✅ [PayPal Subscription] Subscripción creada: " + sub.id);
 
     await db.collection("users").doc(uid).set(
       { paypalSubscriptionId: sub.id, subscriptionActive: false },
       { merge: true }
     );
 
+    logger.info("📄 [PayPal Subscription] Usuario guardado: " + uid);
     const approveUrl = sub.links.find((l) => l.rel === "approve").href;
-
     res.json({ approveUrl });
   } catch (err) {
-    console.error("❌ Error PayPal Subscription:", err.response?.data || err.message);
+    logger.error("❌ [PayPal Subscription] Error: " + (err.response?.data || err.message));
     res.status(500).json({ error: err.message, details: err.response?.data });
   }
 });
@@ -262,27 +287,32 @@ app.post("/paypal-subscription", async (req, res) => {
 // =======================
 app.post("/webhook-paypal", express.json(), async (req, res) => {
   const event = req.body;
+  logger.info("🔔 [PayPal Webhook] Evento recibido: " + event.event_type);
 
   if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
     const subId = event.resource.id;
+    logger.info("⚡ [PayPal Webhook] Subscripción activada: " + subId);
     const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
-    snapshot.forEach((doc) =>
+    snapshot.forEach((doc) => {
       doc.ref.update({
         subscriptionActive: true,
         updatedAt: new Date(),
-      })
-    );
+      });
+      logger.info("✅ [PayPal Webhook] Usuario activado: " + doc.id);
+    });
   }
 
   if (event.event_type === "BILLING.SUBSCRIPTION.CANCELLED") {
     const subId = event.resource.id;
+    logger.warn("⚡ [PayPal Webhook] Subscripción cancelada: " + subId);
     const snapshot = await db.collection("users").where("paypalSubscriptionId", "==", subId).get();
-    snapshot.forEach((doc) =>
+    snapshot.forEach((doc) => {
       doc.ref.update({
         subscriptionActive: false,
         updatedAt: new Date(),
-      })
-    );
+      });
+      logger.warn("⚡ [PayPal Webhook] Usuario desactivado: " + doc.id);
+    });
   }
 
   res.sendStatus(200);
@@ -292,16 +322,21 @@ app.post("/webhook-paypal", express.json(), async (req, res) => {
 // Estado de suscripción
 // =======================
 app.get("/subscription-status/:uid", async (req, res) => {
+  logger.info("⚡ [Subscription Status] Consultando UID: " + req.params.uid);
   try {
     const { uid } = req.params;
     const userDoc = await db.collection("users").doc(uid).get();
 
-    if (!userDoc.exists) return res.json({ subscriptionActive: false });
+    if (!userDoc.exists) {
+      logger.warn("⚠️ [Subscription Status] Usuario no encontrado: " + uid);
+      return res.json({ subscriptionActive: false });
+    }
 
     const userData = userDoc.data();
+    logger.info("✅ [Subscription Status] Usuario: " + uid + " Estado: " + userData.subscriptionActive);
     res.json({ subscriptionActive: userData.subscriptionActive || false });
   } catch (err) {
-    console.error("❌ Error Subscription Status:", err.message);
+    logger.error("❌ [Subscription Status] Error: " + err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -310,4 +345,4 @@ app.get("/subscription-status/:uid", async (req, res) => {
 // Start Server
 // =======================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
+app.listen(PORT, () => logger.info(`🚀 Servidor corriendo en puerto ${PORT}`));
