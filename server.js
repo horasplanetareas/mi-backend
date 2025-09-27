@@ -166,10 +166,10 @@ app.post("/mp-subscription", async (req, res) => {
 // MercadoPago Webhook
 app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
   const data = req.body;
-
+  console.log("🔔 Webhook MP recibido:", data);
   if (data.entity === "preapproval" || data.type === "subscription_preapproval") {
     const preapprovalId = data.data?.id;
-
+    console.log("🔍 Consultando preapproval ID:", preapprovalId);
     if (preapprovalId) {
       try {
         const preapprovalResp = await preapproval.get({ id: preapprovalId });
@@ -177,15 +177,17 @@ app.post("/webhook-mp", express.json({ limit: "1mb" }), async (req, res) => {
         const snapshot = await db.collection("users")
           .where("mpPreapprovalId", "==", preapprovalId)
           .get();
-
+          console.log("📄 Usuarios encontrados:", snapshot.size);
         snapshot.forEach((doc) =>
           doc.ref.update({
             subscriptionActive: status === "authorized",
             updatedAt: new Date(),
+            console.log("✅ Usuario actualizado:", doc.id, "Status:", status);
           })
         );
       } catch (err) {
         console.error("❌ Error al consultar preapproval en MP:", err.message);
+        console.log(err);
       }
     }
   }
